@@ -352,6 +352,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-- [CachyOS](https://github.com/CachyOS) for proton-cachyos
+- [CachyOS](https://github.com/CachyOS/proton-cachyos) for proton-cachyos
 - [Thomas Crider (GloriousEggroll)](https://github.com/GloriousEggroll) for GE-Proton
 - [ProtonUp-Qt](https://davidotek.github.io/protonup-qt/), which does this with a GUI and does it well
