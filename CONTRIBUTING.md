@@ -14,7 +14,7 @@ shellcheck --severity=style proton-updater install.sh
 systemd-analyze verify systemd/proton-updater.service systemd/proton-updater.timer
 ```
 
-CI runs the first two on every PR.
+All three should come back clean before you open a PR. There's a workflow in `.github/workflows/ci.yml` that runs the first two, but run them locally regardless — it's the local result that matters.
 
 ## Style
 
