@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an addition or change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project aims to stay small: Bash, few dependencies, no GUI, no
+        daemon. Requests that fit that shape are much more likely to land.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
+      description: Env var overrides, a unit override, a wrapper script, another tool?
+    validations:
+      required: false
