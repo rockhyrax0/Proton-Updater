@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ShellCheck + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Bash syntax check
+        run: |
+          bash -n proton-updater
+          bash -n install.sh
+
+      - name: ShellCheck
+        # --severity=style is the strictest setting and reports everything.
+        #
+        # This passes clean only with the two `# shellcheck disable=SC2012`
+        # directives on the `ls -dt` calls in prune_builds/refresh_symlinks —
+        # those sort by mtime, which find can't do portably, and the paths are
+        # upstream release folder names, so the SC2012 concern doesn't apply.
+        # Without them, drop to --severity=warning instead (SC2012 is info-level).
+        run: shellcheck --severity=style --color=always proton-updater install.sh
+
+  units:
+    name: Verify systemd units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # systemd-analyze verify resolves ExecStart= and fails if the binary
+      # doesn't exist, so put it where %h expansion will find it first.
+      - name: Stage the script
+        run: install -Dm755 proton-updater "$HOME/.local/bin/proton-updater"
+
+      - name: Verify
+        run: |
+          systemd-analyze verify \
+            systemd/proton-updater.service \
+            systemd/proton-updater.timer
