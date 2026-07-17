@@ -2,7 +2,6 @@
 
 **Keep CachyOS Proton and GE-Proton current for Steam, automatically. No GUI, no daemon, no Python.**
 
-[![CI](https://github.com/rockhyrax0/Proton-Updater/actions/workflows/ci.yml/badge.svg)](https://github.com/rockhyrax0/Proton-Updater/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Shell: Bash](https://img.shields.io/badge/shell-bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
 
