@@ -1,0 +1,90 @@
+name: Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. The journal output and your
+        Steam install type answer most questions on their own — please don't
+        skip them.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal output
+      description: |
+        Output of:
+        `journalctl --user -u proton-updater.service -n 50 --no-pager`
+
+        If it only fails on a manual run, paste that output instead.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: steam-type
+    attributes:
+      label: Steam install
+      options:
+        - Native
+        - Flatpak
+        - Both
+        - Snap
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: trigger
+    attributes:
+      label: How was it triggered?
+      options:
+        - Systemd timer
+        - Manual run (proton-updater)
+        - Manual service start (systemctl --user start)
+        - Both timer and manual
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, or `git rev-parse --short HEAD` if you're on a clone.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of:
+        ```
+        . /etc/os-release && echo "$PRETTY_NAME"
+        bash --version | head -1
+        /lib/ld-linux-x86-64.so.2 --help | grep -m1 x86-64-v3
+        stat -f -c %T "$HOME"
+        command -v jq curl wget flock notify-send
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Non-default env vars, unit overrides, unusual Steam library layout, etc.
+    validations:
+      required: false
