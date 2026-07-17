@@ -1,0 +1,16 @@
+[Unit]
+Description=Update CachyOS Proton and GE-Proton compatibility tools
+Documentation=https://github.com/rockhyrax0/Proton-Updater
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/proton-updater
+
+# Be a good citizen: this is background maintenance, not something anyone
+# is waiting on. Yield to whatever the user is actually doing.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# Don't let a hung download wedge the unit forever.
+TimeoutStartSec=30min

@@ -1,0 +1,18 @@
+[Unit]
+Description=Check for CachyOS Proton and GE-Proton updates twice daily
+Documentation=https://github.com/rockhyrax0/Proton-Updater
+
+[Timer]
+OnCalendar=09:00
+OnCalendar=18:00
+
+# Wall-clock schedule + Persistent means a run missed while the machine was
+# off or suspended fires once we're back. Monotonic timers (OnBootSec /
+# OnUnitActiveSec) freeze across suspend and silently drift instead.
+Persistent=true
+
+# Don't stampede GitHub at exactly 09:00:00 along with everyone else.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

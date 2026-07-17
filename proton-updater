@@ -1,0 +1,743 @@
+#!/usr/bin/env bash
+#
+# proton-updater — keep CachyOS Proton and GE-Proton current for Steam.
+#
+# Portable across modern Linux distros, mutable and immutable. It only ever
+# writes inside $HOME, so it works on Silverblue/Bazzite/SteamOS/MicroOS/NixOS
+# just as well as Arch/Ubuntu/Fedora.
+#
+# Env overrides:
+#   KEEP_BUILDS=2                 builds to retain per provider
+#   NET_WAIT=30                   seconds to wait for network
+#   CACHYOS_PATTERN / GE_PATTERN  asset-selection regexes
+#   GE_EXCLUDE=regex              GE assets to drop before matching (arch guard)
+#   STEAM_COMPAT_DIRS=a:b:c       explicit compat dirs (':' separated)
+#   PROTON_UPDATER_CACHE=DIR      work/cache dir (default XDG cache)
+#   GITHUB_TOKEN=...              raise GitHub API rate limit
+#   NO_NOTIFY=1                   suppress desktop notifications
+#   DL_ICON=folder-download       icon name for the download-progress popups
+#   NO_VERIFY=1                   skip checksum verification entirely
+#   VERIFY_STRICT=1              treat a checksum mismatch as fatal
+#                                (default: warn and proceed; extraction still
+#                                 catches genuinely corrupt archives)
+
+set -u
+
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+KEEP_BUILDS="${KEEP_BUILDS:-2}"
+NET_WAIT="${NET_WAIT:-30}"
+CACHYOS_PATTERN="${CACHYOS_PATTERN:-}"   # empty => auto-selected per CPU in main()
+GE_PATTERN="${GE_PATTERN:-}"             # empty => auto-selected per CPU in main()
+LOG_TAG="proton-updater"
+NOTIFY_REPLACE=0   # set to 1 by detect_notify() if notify-send can update a
+                   # notification in place (needed for the live progress bar).
+DL_ICON="${DL_ICON:-folder-download}"    # icon for the download-progress popups
+
+# Work on persistent storage on the same filesystem as $HOME — never /tmp,
+# which is tmpfs (RAM) on most systemd distros and would OOM on multi-GB
+# Proton extractions. Keeps cross-device copies and reflinks possible.
+CACHE_DIR="${PROTON_UPDATER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/proton-updater}"
+
+WORKDIR=""
+cleanup() { [ -n "$WORKDIR" ] && rm -rf "$WORKDIR"; }
+trap cleanup EXIT INT TERM
+
+# --------------------------------------------------------------------------
+# Small utilities
+# --------------------------------------------------------------------------
+log()  { printf '[%s] %s\n'        "$LOG_TAG" "$*"; }
+err()  { printf '[%s] ERROR: %s\n' "$LOG_TAG" "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+    # Print the header block: line 3 through the first blank line. Range-based
+    # rather than a hardcoded end line, so editing the header above can never
+    # leak code into --help output again.
+    sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+notify() {
+    [ -n "${NO_NOTIFY:-}" ] && return 0
+    have notify-send || return 0
+    notify-send --icon=system-software-update "$@" >/dev/null 2>&1 || true
+}
+
+notify_persistent() {
+    [ -n "${NO_NOTIFY:-}" ] && return 0
+    have notify-send || return 0
+    notify-send --icon=system-software-update -u critical --hint=string:transient:false "$@" >/dev/null 2>&1 || true
+}
+
+# --------------------------------------------------------------------------
+# In-place progress notifications
+# --------------------------------------------------------------------------
+# One popup, updated via --replace-id, carrying the de-facto "int:value:0-100"
+# hint that KDE, GNOME, dunst and mako render as a progress bar (daemons that
+# don't understand it just ignore it — the % in the body text still updates).
+# Needs a notify-send new enough for --print-id/--replace-id; on older builds
+# np_start falls back to a single, non-updating popup and the update/end helpers
+# become no-ops. detect_notify() decides which path we're on.
+detect_notify() {
+    have notify-send || return 0
+    local h; h=$(notify-send --help 2>&1)
+    printf '%s' "$h" | grep -q -- '--replace-id' \
+        && printf '%s' "$h" | grep -q -- '--print-id' \
+        && NOTIFY_REPLACE=1
+    return 0
+}
+
+np_start() {                    # $1=title $2=body  ->  echoes notification id
+    { [ -n "${NO_NOTIFY:-}" ] || ! have notify-send; } && { echo ""; return 0; }
+    if [ "$NOTIFY_REPLACE" -eq 1 ]; then
+        notify-send --print-id -t 0 --icon="$DL_ICON" -u normal "$1" "$2" 2>/dev/null || echo ""
+    else
+        notify_persistent "$1" "$2"; echo ""
+    fi
+}
+
+np_update() {                   # $1=id $2=title $3=body $4=percent(optional)
+    [ "$NOTIFY_REPLACE" -eq 1 ] || return 0
+    { [ -n "${NO_NOTIFY:-}" ] || [ -z "$1" ]; } && return 0
+    if [ -n "${4:-}" ]; then
+        notify-send --replace-id="$1" -t 0 -h int:value:"$4" \
+            --icon="$DL_ICON" -u normal "$2" "$3" 2>/dev/null || true
+    else
+        notify-send --replace-id="$1" -t 0 \
+            --icon="$DL_ICON" -u normal "$2" "$3" 2>/dev/null || true
+    fi
+}
+
+np_end() {                      # $1=id $2=title $3=body $4=percent(optional)
+    { [ -n "${NO_NOTIFY:-}" ] || [ "$NOTIFY_REPLACE" -ne 1 ] || [ -z "$1" ]; } && return 0
+    if [ -n "${4:-}" ]; then
+        notify-send --replace-id="$1" -h int:value:"$4" \
+            --icon="$DL_ICON" -u normal "$2" "$3" 2>/dev/null || true
+    else
+        notify-send --replace-id="$1" \
+            --icon="$DL_ICON" -u normal "$2" "$3" 2>/dev/null || true
+    fi
+}
+
+# Strip provider prefixes to a bare version string. POSIX/busybox-safe:
+# uses bracket expressions instead of GNU sed's non-portable 'I' flag.
+strip_version() {
+    printf '%s' "$1" | sed \
+        -e 's/[Pp][Rr][Oo][Tt][Oo][Nn]-[Cc][Aa][Cc][Hh][Yy][Oo][Ss]-//' \
+        -e 's/[Pp][Rr][Oo][Tt][Oo][Nn]-//' \
+        -e 's/[Gg][Ee]-//'
+}
+
+# Map an asset filename to a short arch tag for the tool name, read from what
+# was actually downloaded: x86_64_v3 -> "-v3", aarch64/arm64 -> "-arm64". The
+# baseline x86_64 build (and anything without an arch token) yields nothing, so
+# it stays bare. v3 is checked first so it can't be shadowed by a plain x86_64.
+arch_tag() {
+    case "$1" in
+        *x86_64_v3*)       printf '%s' '-v3' ;;
+        *aarch64*|*arm64*) printf '%s' '-arm64' ;;
+    esac
+}
+
+# Format the arch already baked into a link_id for a human-facing display name,
+# e.g. "…-v3" -> " (v3)". Empty when there's no arch suffix (baseline / GE), so
+# those keep their plain "CachyOS Proton Latest" / "GE Proton Latest" names.
+disp_arch() {
+    case "$1" in
+        *-v3)    printf '%s' ' (v3)' ;;
+        *-arm64) printf '%s' ' (arm64)' ;;
+    esac
+}
+
+# Copy a tree, using reflink (instant CoW) on btrfs/xfs — common on
+# Bazzite/Silverblue/SteamOS — and falling back to a plain copy elsewhere.
+copy_tree() {
+    cp --reflink=auto -a "$1" "$2" 2>/dev/null || cp -a "$1" "$2"
+}
+
+# True if this machine supports the x86-64-v3 micro-arch level (AVX2, BMI1/2,
+# FMA, F16C, MOVBE, LZCNT, OSXSAVE). Asks glibc's own loader first: it reports
+# exactly which glibc-hwcaps tier it will use, which is more reliable than
+# hand-parsing /proc/cpuinfo (LZCNT shows as 'abm', OSXSAVE has no flag, AVX is
+# masked unless the OS enabled XSAVE, etc.). Falls back to flag-parsing only if
+# the loader is missing or too old (glibc < 2.33).
+supports_x86_64_v3() {
+    local ld out=""
+    for ld in /lib64/ld-linux-x86-64.so.2 \
+              /usr/lib64/ld-linux-x86-64.so.2 \
+              /lib/ld-linux-x86-64.so.2; do
+        [ -e "$ld" ] && { out=$("$ld" --help 2>/dev/null); break; }
+    done
+    if [ -n "$out" ]; then
+        printf '%s\n' "$out" | grep -q 'x86-64-v3 (supported' && return 0
+        printf '%s\n' "$out" | grep -q 'x86-64-v[0-9]'        && return 1
+    fi
+    local flags need
+    flags=" $(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null | cut -d: -f2-) "
+    for need in avx avx2 bmi1 bmi2 f16c fma movbe abm xsave; do
+        case "$flags" in *" $need "*) ;; *) return 1 ;; esac
+    done
+    return 0
+}
+
+# Choose CachyOS assets for THIS machine and announce the choice. Sets the global
+# CACHYOS_PATTERN to a newline-separated preference list (first match wins in
+# update_provider, so order = priority). Patterns are anchored so 'x86_64' can
+# never grab the 'x86_64_v3' asset. Logs to STDOUT so the choice shows up in the
+# journal, which means it must be called directly, NOT via $(...). An explicit
+# CACHYOS_PATTERN from the environment short-circuits the auto-detection.
+set_cachyos_pattern() {
+    if [ -n "${CACHYOS_PATTERN:-}" ]; then
+        log "CachyOS: using pinned CACHYOS_PATTERN override ($CACHYOS_PATTERN)."
+        return
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64)
+            if supports_x86_64_v3; then
+                log "CPU is x86-64-v3 capable; preferring the _v3 build (baseline fallback)."
+                CACHYOS_PATTERN=$'(^|[-_])x86_64_v3\\.tar\\.xz$\n(^|[-_])x86_64\\.tar\\.xz$'
+            else
+                log "CPU lacks x86-64-v3 (e.g. no AVX2); using the baseline x86_64 build."
+                CACHYOS_PATTERN='(^|[-_])x86_64\.tar\.xz$'
+            fi ;;
+        aarch64|arm64)
+            log "ARM64 detected; selecting the arm64 build (needs FEX + an x86 Steam to actually run)."
+            CACHYOS_PATTERN='(^|[-_])arm64\.tar\.xz$' ;;
+        *)
+            log "Unknown arch '$(uname -m)'; matching any CachyOS .tar.xz asset."
+            CACHYOS_PATTERN='\.tar\.xz$' ;;
+    esac
+}
+
+# Choose the GE-Proton asset for THIS machine. GE recently started shipping an
+# aarch64 build next to the x86_64 one, so a bare ".tar.gz" match is no longer
+# arch-safe. Sets GE_PATTERN (include) and GE_EXCLUDE (foreign arches to drop).
+# Logs to stdout; call directly, not via $(...). A pinned GE_PATTERN env var
+# short-circuits this.
+set_ge_pattern() {
+    GE_EXCLUDE="${GE_EXCLUDE:-}"
+    if [ -n "${GE_PATTERN:-}" ]; then
+        log "GE: using pinned GE_PATTERN override ($GE_PATTERN)."
+        return
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64)
+            # GE's x86_64 tarball carries no arch suffix; just exclude the ARM one.
+            GE_PATTERN='\.tar\.gz$'
+            GE_EXCLUDE='aarch64|arm64'
+            ;;
+        aarch64|arm64)
+            log "ARM64 detected; selecting GE's aarch64 build (WIP upstream; needs FEX + umu/an ARM Steam to run)."
+            GE_PATTERN='(aarch64|arm64).*\.tar\.gz$'
+            GE_EXCLUDE=''
+            ;;
+        *)
+            GE_PATTERN='\.tar\.gz$'
+            GE_EXCLUDE=''
+            ;;
+    esac
+}
+
+# HTTP GET to stdout via curl or wget, with optional GitHub auth + timeouts.
+http_get() {
+    local url="$1"
+    if have curl; then
+        curl -fsSL --connect-timeout 10 --max-time 60 \
+             ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} "$url"
+    elif have wget; then
+        wget -qO- --timeout=60 --tries=2 \
+             ${GITHUB_TOKEN:+--header="Authorization: Bearer $GITHUB_TOKEN"} "$url"
+    else
+        err "Neither curl nor wget is installed."
+        return 1
+    fi
+}
+
+# Download $1 to file $2, with retries and timeouts on both backends.
+download() {
+    local url="$1" out="$2"
+    if have curl; then
+        curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 \
+             ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
+             -o "$out" "$url"
+    else
+        wget --tries=3 --timeout=30 \
+             ${GITHUB_TOKEN:+--header="Authorization: Bearer $GITHUB_TOKEN"} \
+             -O "$out" "$url"
+    fi
+}
+
+# Size of a regular file in bytes — GNU stat, then BSD stat, then wc as a
+# portable last resort (none of these read the file contents).
+filesize() {
+    stat -c %s "$1" 2>/dev/null \
+        || stat -f %z "$1" 2>/dev/null \
+        || wc -c < "$1" 2>/dev/null \
+        || echo 0
+}
+
+# Total size in bytes for the asset at $url. Prefers the exact size already in
+# the release JSON (no extra request); falls back to a HEAD only if jq is
+# missing or the URL isn't found. Echoes digits, or nothing if unknown.
+asset_size() {                  # $1=url  $2=release-json
+    local url="$1" json="$2" size=""
+    if have jq; then
+        size=$(printf '%s' "$json" | jq -r --arg u "$url" \
+            '.assets[]? | select(.browser_download_url==$u) | .size // empty' 2>/dev/null | head -n1)
+    fi
+    if [ -z "$size" ]; then
+        if have curl; then
+            size=$(curl -fsSIL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} "$url" 2>/dev/null \
+                   | grep -i 'content-length:' | tail -n1 | tr -dc '0-9')
+        elif have wget; then
+            size=$(wget --spider -S ${GITHUB_TOKEN:+--header="Authorization: Bearer $GITHUB_TOKEN"} "$url" 2>&1 \
+                   | grep -i 'content-length:' | tail -n1 | tr -dc '0-9')
+        fi
+    fi
+    case "$size" in ''|*[!0-9]*) size="" ;; esac
+    printf '%s' "$size"
+}
+
+# download() wrapped in a live progress notification. Runs the transfer in the
+# background and watches the output file grow against the known total. Degrades
+# cleanly: unknown total => indeterminate (no %); incapable notify-send => a
+# single popup (see np_*). Returns the download's exit status.
+download_with_progress() {      # $1=url $2=out $3=label $4=version $5=release-json
+    local url="$1" out="$2" label="$3" version="$4" json="$5"
+    local total id cur pct=0 rc
+    total=$(asset_size "$url" "$json")
+
+    id=$(np_start "Proton Updater" "Downloading new $label build: $version — 0%")
+
+    download "$url" "$out" &
+    local dl=$!
+
+    while kill -0 "$dl" 2>/dev/null; do
+        if [ "${total:-0}" -gt 0 ] && [ -f "$out" ]; then
+            cur=$(filesize "$out")
+            pct=$(( cur * 100 / total ))
+            [ "$pct" -gt 100 ] && pct=100
+            np_update "$id" "Proton Updater" "Downloading new $label build: $version — ${pct}%" "$pct"
+        else
+            np_update "$id" "Proton Updater" "Downloading new $label build: $version"
+        fi
+        sleep 1
+    done
+
+    wait "$dl"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        np_end "$id" "Proton Updater" "Verifying $label build: $version…" 100
+    else
+        np_end "$id" "Proton Updater" "$label download failed — see journal"
+    fi
+    return "$rc"
+}
+
+# Pull every browser_download_url out of a release JSON blob.
+# Prefers jq; falls back to a grep/sed parser when jq is absent.
+asset_urls() {
+    if have jq; then
+        jq -r '.assets[]?.browser_download_url // empty' 2>/dev/null
+    else
+        grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+            | sed -E 's/.*"(https?:[^"]+)".*/\1/'
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Preflight + network + locking
+# --------------------------------------------------------------------------
+preflight() {
+    local missing=""
+    have tar  || missing="$missing tar"
+    have sed  || missing="$missing sed"
+    have find || missing="$missing find"
+    if ! have curl && ! have wget; then missing="$missing curl-or-wget"; fi
+    if [ -n "$missing" ]; then
+        err "Missing required tools:$missing"
+        return 1
+    fi
+    have xz   || log "Note: 'xz' not found; CachyOS (.tar.xz) extraction may fail."
+    have gzip || log "Note: 'gzip' not found; GE (.tar.gz) extraction may fail."
+    have jq   || log "Note: 'jq' not found; using the grep/sed JSON fallback."
+    have sha512sum || have sha256sum || log "Note: no sha*sum tool; downloads won't be verified."
+
+    # Proton ships x86_64 builds (plus an experimental arm64 one); warn rather
+    # than fail on other arches. The exact build is chosen later per-CPU.
+    case "$(uname -m)" in
+        x86_64|amd64|aarch64|arm64) ;;
+        *) log "Note: arch '$(uname -m)' is unusual; Proton builds may not run." ;;
+    esac
+    return 0
+}
+
+# Prevent overlapping runs (e.g. a timer firing mid-download). Best-effort.
+acquire_lock() {
+    have flock || return 0
+    local lockfile="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/proton-updater.lock"
+    exec 9>"$lockfile" 2>/dev/null || return 0
+    if ! flock -n 9; then
+        log "Another proton-updater instance is running; exiting."
+        exit 0
+    fi
+}
+
+wait_for_network() {
+    local i=0
+    while [ "$i" -lt "$NET_WAIT" ]; do
+        if http_get "https://api.github.com" >/dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    err "Network not reachable after ${NET_WAIT}s; trying anyway."
+    return 1
+}
+
+# --------------------------------------------------------------------------
+# Integrity
+# --------------------------------------------------------------------------
+verify_checksum() {
+    local file="$1" sums_url="$2" label="$3"
+    [ -n "${NO_VERIFY:-}" ] && return 0
+    [ -n "$sums_url" ] || { log "$label: no checksum published; skipping verification."; return 0; }
+
+    local tool=""
+    case "$sums_url" in
+        *sha512*) have sha512sum && tool=sha512sum ;;
+        *sha256*) have sha256sum && tool=sha256sum ;;
+    esac
+    [ -n "$tool" ] || { log "$label: checksum tool unavailable; skipping."; return 0; }
+
+    local sums base expected actual
+    sums=$(http_get "$sums_url") || { log "$label: couldn't fetch checksum; skipping."; return 0; }
+    # Normalize CRLF so trailing \r never corrupts the comparison.
+    sums=$(printf '%s' "$sums" | tr -d '\r')
+    base=$(basename "$file")
+
+    # Pull the hash from the line that names our file. Position-independent:
+    # works for GNU ("HASH  file") and BSD ("SHA256 (file) = HASH") formats.
+    expected=$(printf '%s\n' "$sums" | awk -v f="$base" 'index($0,f)' \
+               | grep -ioE '[0-9a-f]{64,128}' | head -n1)
+    if [ -z "$expected" ]; then
+        # Otherwise only trust a file that is a single bare hash. Never guess
+        # from a multi-asset list — that caused false aborts for providers
+        # (like CachyOS) that ship many variants in one release.
+        local hashes
+        hashes=$(printf '%s\n' "$sums" | grep -ioE '[0-9a-f]{64,128}')
+        if [ "$(printf '%s\n' "$hashes" | grep -c .)" = "1" ]; then
+            expected="$hashes"
+        else
+            log "$label: checksum file doesn't reference $base; skipping verification."
+            return 0
+        fi
+    fi
+
+    actual=$("$tool" "$file" | awk '{print $1}')
+    [ "$expected" = "$actual" ] && { log "$label: checksum verified."; return 0; }
+
+    # Mismatch. The download is HTTPS from GitHub and the archive carries its
+    # own CRC (a truly corrupt file fails at extraction anyway), so by default
+    # we warn and proceed rather than block a good update on a checksum quirk.
+    # Set VERIFY_STRICT=1 to make a mismatch fatal instead.
+    if [ -n "${VERIFY_STRICT:-}" ]; then
+        err "$label: checksum mismatch (expected $expected, got $actual). Aborting (VERIFY_STRICT)."
+        notify_persistent "Proton Updater" "$label checksum FAILED — not installed."
+        return 1
+    fi
+    err "$label: checksum mismatch (expected $expected, got $actual). Proceeding anyway; extraction will catch real corruption."
+    return 0
+}
+
+# --------------------------------------------------------------------------
+# Build management (Static ID Version)
+# --------------------------------------------------------------------------
+write_vdf() {                   # write Steam's per-tool registration file
+    local toolpath="$1" id="$2" display="$3" version="$4"
+    cat > "$toolpath/compatibilitytool.vdf" <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$id"
+    {
+      "install_path" "."
+      "display_name" "$display"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+}
+
+prune_builds() {
+    local builds_dir="$1" keep_folder="$2" count old
+    [ -d "$builds_dir" ] || return 0
+    count=$(find "$builds_dir" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    [ "$count" -gt "$KEEP_BUILDS" ] || return 0
+    # shellcheck disable=SC2012  # ls -t sorts by mtime; find can't without GNU
+    # -printf, and these are upstream release folder names (no spaces/newlines).
+    ls -dt "$builds_dir"/*/ 2>/dev/null | tail -n "+$((KEEP_BUILDS + 1))" \
+    | while IFS= read -r old; do
+        old="${old%/}"
+        [ "$(basename "$old")" = "$keep_folder" ] && continue
+        rm -rf "$old"
+    done
+}
+
+# Where the actual versioned builds live for a given compat dir: a sibling
+# "proton-updater/<sub>" directory, deliberately NOT inside compatibilitytools.d.
+# Launchers that list every entry in compatibilitytools.d (Faugus/UMU) then only
+# ever see our Latest/Previous symlinks, never the raw build folders; Steam just
+# follows the symlinks, so it's unaffected. dirname keeps this a sibling even for
+# an unusual STEAM_COMPAT_DIRS that doesn't end in /compatibilitytools.d.
+builds_dir() {                  # $1=compat dir  $2=sub  -> build storage path
+    printf '%s/proton-updater/%s' "$(dirname "$1")" "$2"
+}
+
+# One-time migration for a single compat dir: older versions kept builds inside
+# compatibilitytools.d as <compat>/<sub>, which showed up as a stray entry in
+# launchers that list every directory. Move that store to the sibling
+# proton-updater/ (an instant rename on the same filesystem — no re-download) and
+# drop any leftover legacy container so those stray entries disappear.
+migrate_legacy_store() {        # $1=compat dir  $2=sub
+    local old_store="$1/$2" new_store
+    new_store=$(builds_dir "$1" "$2")
+    [ -d "$old_store" ] || return 0
+    if [ ! -e "$new_store" ]; then
+        mkdir -p "$(dirname "$new_store")"
+        mv "$old_store" "$new_store" 2>/dev/null || rm -rf "$old_store"
+    else
+        rm -rf "$old_store"
+    fi
+}
+
+refresh_symlinks() {
+    local compat="$1" sub="$2" link_id="$3" current_folder="$4" label="$5"
+    local builds prev_name prev prev_folder
+    builds=$(builds_dir "$compat" "$sub")
+
+    # Point the Latest symlink (which lives in compatibilitytools.d) at the build
+    # in the sibling store. RELATIVE target, so it resolves the same inside a
+    # Flatpak Steam sandbox as it does on the host.
+    ln -sfn "../proton-updater/$sub/$current_folder" "$compat/$link_id"
+
+    # Update Previous symlink
+    prev_name="${link_id/Latest/Previous}"
+    # shellcheck disable=SC2012  # ls -t sorts by mtime; see prune_builds.
+    prev=$(ls -dt "$builds"/*/ 2>/dev/null | sed -n '2p')
+    if [ -n "$prev" ]; then
+        prev_folder=$(basename "${prev%/}")
+        ln -sfn "../proton-updater/$sub/$prev_folder" "$compat/$prev_name"
+        local prev_version
+        prev_version=$(strip_version "$prev_folder")
+        write_vdf "${prev%/}" "$prev_name" "$label Previous$(disp_arch "$link_id")" "$prev_version"
+    else
+        rm -f "$compat/$prev_name"
+    fi
+}
+
+install_into_dir() {
+    local compat="$1" sub="$2" folder="$3" link_id="$4" staged="$5" label="$6"
+    local builds
+    builds=$(builds_dir "$compat" "$sub")
+    mkdir -p "$builds"
+
+    if [ ! -d "$builds/$folder" ]; then
+        if [ -z "$staged" ]; then
+            err "No staged build available for $folder; skipping $compat."
+            return 1
+        fi
+        rm -rf "$builds/.$folder.tmp"
+        copy_tree "$staged" "$builds/.$folder.tmp"
+        mv "$builds/.$folder.tmp" "$builds/$folder"
+        touch "$builds/$folder"
+        log "Installed $folder into $builds"
+        prune_builds "$builds" "$folder"
+        notify "Proton Updater" "$link_id ready: $folder"
+    fi
+
+    # Keep the installed Latest build's registration current every run, so a
+    # changed display_name (e.g. the new "(v3)" arch tag) propagates on the next
+    # run without needing to delete and re-download the build.
+    write_vdf "$builds/$folder" "$link_id" "$label Latest$(disp_arch "$link_id")" "$(strip_version "$folder")"
+
+    refresh_symlinks "$compat" "$sub" "$link_id" "$folder" "$label"
+}
+
+# --------------------------------------------------------------------------
+# Core: update one provider
+# --------------------------------------------------------------------------
+update_provider() {
+    local repo="$1" pattern="$2" exclude="$3" suffix="$4" sub="$5" link_id="$6" label="$7" archsfx="$8"
+    shift 8
+    local dirs=("$@")
+
+    log "Checking $label ($repo)..."
+    local json
+    json=$(http_get "https://api.github.com/repos/$repo/releases/latest") || {
+        err "$label: could not query GitHub."; return 1; }
+
+    # Extract URLs once, then pick the asset. $pattern may be a newline-separated
+    # preference list (e.g. "_v3 first, baseline second"); the first match wins.
+    local urls url="" pat
+    urls=$(printf '%s' "$json" | asset_urls)
+    # Drop foreign-arch assets first (GE now ships an aarch64 .tar.gz alongside
+    # x86_64), then take the first remaining match in preference order. Filtering
+    # here also keeps the checksum search below from grabbing a foreign-arch sum.
+    [ -n "$exclude" ] && urls=$(printf '%s\n' "$urls" | grep -Ev "$exclude")
+    while IFS= read -r pat; do
+        [ -n "$pat" ] || continue
+        url=$(printf '%s\n' "$urls" | grep -E "$pat" | head -n1)
+        [ -n "$url" ] && break
+    done <<EOF
+$pattern
+EOF
+    [ -z "$url" ] && { err "No $label asset matched: $pattern"; return 1; }
+
+    local filename folder version
+    filename=$(basename "$url")
+    folder="${filename%"$suffix"}"
+    version=$(strip_version "$folder")
+
+    # When archsfx=auto, tag the tool name with the arch actually downloaded
+    # (read from the chosen asset's filename), so a baseline build can never be
+    # labelled "-v3". Providers passing archsfx="" (GE) are left untouched.
+    [ "$archsfx" = "auto" ] && link_id="${link_id}$(arch_tag "$filename")"
+
+    # Find a checksum for THIS asset (e.g. <stem>.sha512sum); else a release-wide
+    # sums file. Match on the STEM plus a literal dot: the checksum file shares
+    # the stem but ends in .sha*, not .tar.*, and the trailing dot stops a
+    # baseline 'x86_64' stem from matching the 'x86_64_v3' checksum file.
+    local sums_url
+    sums_url=$(printf '%s\n' "$urls" | grep -F "${folder}." | grep -Ei '\.(sha512|sha256)(sum)?$' | head -n1)
+    [ -z "$sums_url" ] && sums_url=$(printf '%s\n' "$urls" | grep -Ei 'sha(256|512)sums?(\.txt)?$' | head -n1)
+
+    # Migrate any legacy in-compat-dir store to the sibling proton-updater/ store
+    # before deciding what to download (rename is instant, so no re-download).
+    local d need=0
+    for d in "${dirs[@]}"; do migrate_legacy_store "$d" "$sub"; done
+
+    # Download only if some target dir is missing this build.
+    for d in "${dirs[@]}"; do [ -d "$(builds_dir "$d" "$sub")/$folder" ] || need=1; done
+
+    local staged=""
+    if [ "$need" -eq 1 ]; then
+        local archive="$WORKDIR/$filename"
+        download_with_progress "$url" "$archive" "$label" "$version" "$json" \
+            || { err "$label: download failed."; return 1; }
+        verify_checksum "$archive" "$sums_url" "$label" || return 1
+
+        local exdir="$WORKDIR/$sub-extract"
+        mkdir -p "$exdir"
+        if ! tar -xf "$archive" -C "$exdir"; then
+            local need_tool; need_tool=$([ "$suffix" = ".tar.xz" ] && echo xz || echo gzip)
+            err "$label: extraction failed (is '$need_tool' installed?)."
+            notify_persistent "Proton Updater" "$label extraction failed — not installed."
+            return 1
+        fi
+        rm -f "$archive"
+
+        local top
+        top=$(find "$exdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+        [ -n "$top" ] || { err "$label: no directory found in archive."; return 1; }
+        [ "$(basename "$top")" != "$folder" ] && mv "$top" "$exdir/$folder" && top="$exdir/$folder"
+
+        # Write VDF for Latest using the static ID.
+        write_vdf "$top" "$link_id" "$label Latest$(disp_arch "$link_id")" "$version"
+        staged="$top"
+    else
+        log "$label already up to date ($version)."
+    fi
+
+    for d in "${dirs[@]}"; do
+        install_into_dir "$d" "$sub" "$folder" "$link_id" "$staged" "$label" \
+            || err "Could not install $label into $d"
+    done
+}
+
+# --------------------------------------------------------------------------
+# Steam discovery
+# --------------------------------------------------------------------------
+discover_compat_dirs() {
+    if [ -n "${STEAM_COMPAT_DIRS:-}" ]; then
+        printf '%s\n' "$STEAM_COMPAT_DIRS" | tr ':' '\n'
+        return
+    fi
+    # Flatpak Steam's real data dir varies: current/ostree installs use
+    # .local/share/Steam under the app dir (Steam runs with HOME=app dir and
+    # doesn't honor XDG_DATA_HOME), while some setups/older builds use data/Steam.
+    # Check all; [ -d ] + readlink -f + sort -u keep only the ones that exist —
+    # except ~/.local/share/Steam, which is force-created below.
+    local r
+    for r in \
+        "$HOME/.local/share/Steam" \
+        "$HOME/.steam/steam" \
+        "$HOME/.steam/root" \
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam" \
+        "$HOME/.var/app/com.valvesoftware.Steam/data/Steam" \
+        "$HOME/snap/steam/common/.local/share/Steam"
+    do
+        # Native Steam's data dir is also where Faugus/UMU look for runners, so
+        # force-create it: the build then lands here even if native Steam was
+        # never launched — the only way Faugus reliably gets the x86_64_v3
+        # CachyOS build, since its own manager won't fetch that variant. Drop
+        # this line to revert to existence-gated (only when native Steam exists).
+        [ "$r" = "$HOME/.local/share/Steam" ] && mkdir -p "$r/compatibilitytools.d" 2>/dev/null
+        [ -d "$r" ] && readlink -f "$r" | sed 's/$/\/compatibilitytools.d/'
+    done | sort -u
+}
+
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+main() {
+    case "${1:-}" in -h|--help) usage ;; esac
+
+    preflight || exit 1
+    acquire_lock
+    detect_notify
+
+    mkdir -p "$CACHE_DIR" 2>/dev/null \
+        || { err "Cannot create cache dir: $CACHE_DIR"; exit 1; }
+    WORKDIR=$(mktemp -d "$CACHE_DIR/run.XXXXXX") \
+        || { err "Cannot create work dir under $CACHE_DIR"; exit 1; }
+
+    wait_for_network || true
+
+    local compat_dirs=() line
+    while IFS= read -r line; do
+        [ -n "$line" ] && compat_dirs+=("$line")
+    done < <(discover_compat_dirs)
+
+    [ "${#compat_dirs[@]}" -eq 0 ] && { err "No Steam install found."; exit 1; }
+    log "Targets: ${compat_dirs[*]}"
+
+    local ok="" failed=""
+
+    # Pick the right asset(s) for this CPU for each provider (v3/baseline/arm64
+    # for CachyOS; x86_64-vs-aarch64 for GE). Both log the choice.
+    set_cachyos_pattern
+    set_ge_pattern
+
+    if update_provider "CachyOS/proton-cachyos" "$CACHYOS_PATTERN" "" ".tar.xz" \
+        "cachyos-builds" "Proton-CachyOS-Latest" "CachyOS Proton" "auto" "${compat_dirs[@]}"
+    then ok="$ok CachyOS"; else failed="$failed CachyOS"; fi
+
+    if update_provider "GloriousEggroll/proton-ge-custom" "$GE_PATTERN" "$GE_EXCLUDE" ".tar.gz" \
+        "ge-builds" "Proton-GE-Latest" "GE Proton" "" "${compat_dirs[@]}"
+    then ok="$ok GE"; else failed="$failed GE"; fi
+
+    log "Finished. OK:${ok:- none}   Failed:${failed:- none}"
+    if [ -n "$failed" ]; then
+        notify_persistent "Proton Updater" "Updates failed:$failed (run from a terminal for details)"
+    else
+        notify "Proton Updater" "All Proton update checks finished."
+    fi
+}
+
+main "$@"
