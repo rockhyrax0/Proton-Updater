@@ -1,0 +1,15 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A game doesn't work under Proton
+    url: https://www.protondb.com/
+    about: >
+      This project only downloads and installs Proton builds — it has no
+      influence on how they run. Game compatibility issues belong upstream.
+
+  - name: Bug in proton-cachyos itself
+    url: https://github.com/CachyOS/proton-cachyos/issues
+    about: Issues with the CachyOS Proton build itself go here.
+
+  - name: Bug in GE-Proton itself
+    url: https://github.com/GloriousEggroll/proton-ge-custom/issues
+    about: Issues with the GE-Proton build itself go here.
