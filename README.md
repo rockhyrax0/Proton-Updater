@@ -249,7 +249,7 @@ For an update to an *existing* tool the symlink is repointed underneath Steam, s
 
 ### Does this work with Lutris, Faugus or Heroic?
 
-Yes — and it needs no configuration, because `~/.local/share/Steam/compatibilitytools.d` has become the de-facto shared runner directory for the umu ecosystem. That's one of the paths this script always populates, so the builds simply show up.
+Yes — and it needs no configuration, because `~/.local/share/Steam/compatibilitytools.d` has become the default shared runner directory for the umu ecosystem. That's one of the paths this script always populates, so the builds simply show up.
 
 - **Faugus Launcher** documents that exact directory as its runners location, and its own README tells you to symlink native `proton-cachyos` / `proton-ge-custom` builds into it by hand. This script is that instruction, automated. Faugus's built-in Proton Manager only fetches GE-Proton and Proton-EM, so this is also the path of least resistance for getting the CachyOS `x86_64_v3` build in front of it.
 - **Lutris** scans the same directory for Proton builds and hands whichever you select to umu.
@@ -268,23 +268,6 @@ If you'd rather it only touch directories that already exist, delete the `mkdir 
 ### Will this touch my system, or need root?
 
 No. The script goes in `~/.local/bin`, units in `~/.config/systemd/user`, builds under your Steam root. No root, no system packages, no daemon. That's why it works unmodified on immutable distros.
-
-### I'm behind a VPN or CGNAT and it started failing
-
-The GitHub API allows 60 unauthenticated requests per hour **per IP**. A run uses only a handful, so you won't hit that alone — but on a shared exit IP you're pooled with everyone else on it. If the journal shows HTTP 403 with a rate-limit message, that's what happened.
-
-Fix it with a token — no scopes required:
-
-```bash
-systemctl --user edit proton-updater.service
-```
-
-```ini
-[Service]
-Environment=GITHUB_TOKEN=ghp_yourtokenhere
-```
-
-That takes you to 5000 requests/hour.
 
 ### Does it work on ARM64?
 
