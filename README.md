@@ -251,13 +251,13 @@ For an update to an *existing* tool the symlink is repointed underneath Steam, s
 
 Yes — and it needs no configuration, because `~/.local/share/Steam/compatibilitytools.d` has become the default shared runner directory for the umu ecosystem. That's one of the paths this script always populates, so the builds simply show up.
 
-- **Faugus Launcher** documents that exact directory as its runners location, and its own README tells you to symlink native `proton-cachyos` / `proton-ge-custom` builds into it by hand. This script is that instruction, automated. Faugus's built-in Proton Manager only fetches GE-Proton and Proton-EM, so this is also the path of least resistance for getting the CachyOS `x86_64_v3` build in front of it.
+- **Faugus Launcher** documents that exact directory as its runners location, and its own README tells you to symlink native `proton-cachyos` / `proton-ge-custom` builds into it by hand. This script is that instruction, automated.
 - **Lutris** scans the same directory for Proton builds and hands whichever you select to umu.
 - **Heroic** and anything else built on umu-launcher follows the same convention.
 
 They'll appear under this script's names — `Proton-CachyOS-Latest-v3`, `Proton-GE-Latest` — and rollback via the matching `Previous` entry works the same everywhere.
 
-**If you also use Faugus's Proton Manager**, note that it installs GE-Proton as `Proton-GE Latest` (with a space), while this script installs `Proton-GE-Latest` (all hyphens). They're different entries pointing at different builds, updated by different tools, and both will show in the list. Pick one and let it own the job, or you'll spend a while wondering which one a game is actually using.
+**If you also use Faugus's Proton Manager**, note that it installs GE-Proton as `Proton-GE Latest` (with a space), while this script installs `Proton-GE-Latest` (all hyphens). They're different entries pointing at different builds, updated by different tools.
 
 ### Why does it create `~/.local/share/Steam` even though I only use Flatpak Steam?
 
