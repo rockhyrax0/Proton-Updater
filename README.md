@@ -267,7 +267,7 @@ If you'd rather it only touch directories that already exist, delete the `mkdir 
 
 ### Will this touch my system, or need root?
 
-No. The script goes in `~/.local/bin`, units in `~/.config/systemd/user`, builds under your Steam root. No root, no system packages, no daemon. That's why it works unmodified on immutable distros.
+No. The script goes in `~/.local/bin`, units in `~/.config/systemd/user`, builds under your Steam root. No root.
 
 ### Does it work on ARM64?
 
