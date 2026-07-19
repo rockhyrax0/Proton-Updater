@@ -5,22 +5,22 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Shell: Bash](https://img.shields.io/badge/shell-bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
 
-`proton-updater` is a single Bash script that checks GitHub for new [proton-cachyos](https://github.com/CachyOS/proton-cachyos) and [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) releases, picks the right build for your CPU, downloads and verifies it, and wires it into Steam — and, because they share a runner directory, into Faugus Launcher, Lutris and Heroic at the same time. Pair it with the included systemd timer and you stop thinking about Proton versions.
+`proton-updater` is a single Bash script that checks GitHub for new [proton-cachyos](https://github.com/CachyOS/proton-cachyos) and [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) releases, picks the right build for your CPU, downloads and verifies it, and wires it into Steam, and because they share a runner directory, into Faugus Launcher, Lutris and Heroic at the same time.
 
 It only ever writes inside `$HOME`, so it works the same on Silverblue, Bazzite, SteamOS, MicroOS and NixOS as it does on Arch, Fedora or Ubuntu.
 
 ## Why not ProtonUp-Qt?
 
-Use it if you like it — it's a good tool and more discoverable than this. But it's a GUI, so your builds update when *you* remember to open it and click. `proton-updater` updates Proton the way your packages update: on a schedule, in the background, with a journal to read when something breaks. It also fetches the CachyOS `x86_64_v3` build, which some launchers won't fetch for you at all.
+Use it if you like it. It's a good tool and more discoverable than this. But it's a GUI, so your builds update when *you* remember to open it and click. `proton-updater` updates Proton the way your packages update: on a schedule, in the background, with a journal to read when something breaks. It also fetches the CachyOS `x86_64_v3` build, which some launchers won't fetch for you at all.
 
 ## Features
 
-- **Stable IDs, rolling targets.** Steam always sees `Proton-CachyOS-Latest-v3` and `Proton-GE-Latest`. Pin a game once and it keeps getting newer builds — no re-pinning after every update.
+- **Stable IDs, rolling targets.** Steam always sees `Proton-CachyOS-Latest-v3` and `Proton-GE-Latest`. Pin a game once and it keeps getting newer builds. No re-pinning after every update.
 - **One-dropdown rollback.** `Proton-CachyOS-Previous-v3` and `Proton-GE-Previous` always point at the build before the current one. New build breaks a game? Switch the dropdown, keep playing.
 - **CPU-aware.** Asks glibc's loader which micro-arch tier it will use instead of hand-parsing `/proc/cpuinfo`, then takes the `x86_64_v3` CachyOS build when supported and the baseline when not. Anchored patterns mean `x86_64` can never grab the `x86_64_v3` asset.
 - **Not only Steam.** Native, Flatpak (both layouts) and Snap are all discovered in one run. Because `~/.local/share/Steam/compatibilitytools.d` doubles as the shared runner directory for the umu ecosystem, Faugus, Lutris and Heroic pick up the same builds with no extra work.
 - **Live progress notifications.** A single popup that updates in place with a real progress bar on KDE and GNOME. Degrades to one static notification on older `notify-send`, and to silence with `NO_NOTIFY=1`.
-- **Safe installs.** Copies to a `.tmp` name, then renames into place, so an interrupted run never leaves Steam a half-written build. A `flock` guard stops a timer firing mid-download from colliding with a manual run, reflink copies are near-instant on btrfs/XFS, downloads are checked against SHA-512/256, and it keeps the last two builds per provider and prunes the rest. Work happens in your XDG cache, never `/tmp` — that's tmpfs on most systemd distros, where a multi-GB extraction would OOM.
+- **Safe installs.** Copies to a `.tmp` name, then renames into place, so an interrupted run never leaves Steam a half-written build. A `flock` guard stops a timer firing mid-download from colliding with a manual run, reflink copies are near-instant on btrfs/XFS, downloads are checked against SHA-512/256, and it keeps the last two builds per provider and prunes the rest. Work happens in your XDG cache, never `/tmp`. That's tmpfs on most systemd distros, where a multi-GB extraction would OOM.
 - **Dependency-light.** Bash, coreutils, `tar`, and `curl` *or* `wget`. `jq` is used when present; otherwise a `grep`/`sed` parser handles the GitHub API response.
 
 ## How it works
@@ -104,7 +104,7 @@ Make sure `~/.local/bin` is on your `PATH`.
 bash install.sh --uninstall
 ```
 
-Removes the script and units. Installed Proton builds are left alone — delete `<steam-root>/proton-updater/` yourself if you want them gone.
+Removes the script and units. Installed Proton builds are left alone. Delete `<steam-root>/proton-updater/` yourself if you want them gone.
 
 ## Usage
 
@@ -133,13 +133,13 @@ Environment=GITHUB_TOKEN=ghp_...
 
 | Variable | Default | Description |
 |---|---|---|
-| `KEEP_BUILDS` | `2` | Builds retained per provider. 2 is what backs the Latest/Previous pair — set it to 1 and you lose rollback. |
+| `KEEP_BUILDS` | `2` | Builds retained per provider. 2 is what backs the Latest/Previous pair. Set it to 1 and you lose rollback. |
 | `NET_WAIT` | `30` | Seconds to wait for the network before trying anyway. |
 | `CACHYOS_PATTERN` | *(auto)* | Pin CachyOS asset selection to a regex, bypassing CPU detection. May be a newline-separated preference list; first match wins. |
 | `GE_PATTERN` | *(auto)* | Same, for GE-Proton. |
-| `GE_EXCLUDE` | *(auto)* | Regex of GE assets to drop before matching — how the aarch64 build is kept out of the way on x86_64. |
+| `GE_EXCLUDE` | *(auto)* | Regex of GE assets to drop before matching: how the aarch64 build is kept out of the way on x86_64. |
 | `STEAM_COMPAT_DIRS` | *(auto)* | Explicit `:`-separated compat dirs, bypassing discovery. Useful for testing against a throwaway directory. |
-| `PROTON_UPDATER_CACHE` | `$XDG_CACHE_HOME/proton-updater` | Work/cache directory. Must be on persistent storage with room for a full extraction — not tmpfs. |
+| `PROTON_UPDATER_CACHE` | `$XDG_CACHE_HOME/proton-updater` | Work/cache directory. Must be on persistent storage with room for a full extraction, not tmpfs. |
 | `GITHUB_TOKEN` | *(unset)* | Raises the GitHub API rate limit from 60/hr to 5000/hr. Needs no scopes. |
 | `NO_NOTIFY` | *(unset)* | Suppress all desktop notifications. |
 | `DL_ICON` | `folder-download` | Icon name for the download progress popup. |
@@ -148,7 +148,7 @@ Environment=GITHUB_TOKEN=ghp_...
 
 ## Scheduling
 
-The timer is **off by default** — `bash install.sh --enable` (or `systemctl --user enable --now proton-updater.timer`) turns it on. Once running, it fires at **09:00 and 18:00** daily:
+The timer is **off by default**. `bash install.sh --enable` (or `systemctl --user enable --now proton-updater.timer`) turns it on. Once running, it fires at **09:00 and 18:00** daily:
 
 ```ini
 [Timer]
@@ -158,7 +158,7 @@ Persistent=true
 RandomizedDelaySec=300
 ```
 
-- **`Persistent=true`** runs a job missed while the machine was off or asleep shortly after you're back. That's why the timer is wall-clock (`OnCalendar=`) rather than monotonic — monotonic timers (`OnBootSec=`/`OnUnitActiveSec=`) freeze across suspend and drift.
+- **`Persistent=true`** runs a job missed while the machine was off or asleep shortly after you're back. That's why the timer is wall-clock (`OnCalendar=`) rather than monotonic. Monotonic timers (`OnBootSec=`/`OnUnitActiveSec=`) freeze across suspend and drift.
 - **`RandomizedDelaySec=300`** keeps everyone running this from hitting GitHub at 09:00:00 exactly.
 
 Change the schedule with an override rather than editing the shipped unit (`systemctl --user edit proton-updater.timer`):
@@ -169,13 +169,13 @@ OnCalendar=
 OnCalendar=daily
 ```
 
-The empty `OnCalendar=` is required — it clears the shipped values instead of adding to them.
+The empty `OnCalendar=` is required: it clears the shipped values instead of adding to them.
 
 ## Verification
 
 Assets are downloaded over HTTPS and checked against the release's published SHA-512 or SHA-256, in whichever of the two common formats upstream used.
 
-On a mismatch, the default is to **warn and proceed**. That's deliberate: the transfer was HTTPS, the archive carries its own CRC, and a genuinely corrupt file fails at extraction a few seconds later anyway. Blocking a good update on a checksum quirk — a stale sums file, an upstream re-upload — costs more than it saves. Set `VERIFY_STRICT=1` for the hard guarantee, or `NO_VERIFY=1` to skip the check.
+On a mismatch, the default is to **warn and proceed**. That's deliberate: the transfer was HTTPS, the archive carries its own CRC, and a genuinely corrupt file fails at extraction a few seconds later anyway. Blocking a good update on a checksum quirk (a stale sums file, an upstream re-upload) costs more than it saves. Set `VERIFY_STRICT=1` for the hard guarantee, or `NO_VERIFY=1` to skip the check.
 
 One caveat worth stating plainly: both upstreams publish checksums to the same GitHub release as the asset. A match proves the bytes you got are the bytes GitHub served. It does not prove GitHub served the right bytes.
 
@@ -183,19 +183,19 @@ One caveat worth stating plainly: both upstreams publish checksums to the same G
 
 ### Will updating force my shader caches to recompile?
 
-Partly — but the naming scheme isn't why, and no design avoids it. A Proton update ships new DXVK and VKD3D-Proton, which generate different SPIR-V from the same game shaders, so Mesa's on-disk cache misses and pipelines rebuild on first launch. That's true of *any* Proton update by any tool, including clicking the button in ProtonUp-Qt. What the rolling-symlink design changes is *when*: the swap happens on a timer, so the stutter can land on a launch you weren't expecting it on. That's what `Previous` is for — switch back and you're on the old build immediately, no re-download. Prefer never being surprised? Disable the timer and run `proton-updater` by hand.
+Partly, but the naming scheme isn't why, and no design avoids it. A Proton update ships new DXVK and VKD3D-Proton, which generate different SPIR-V from the same game shaders, so Mesa's on-disk cache misses and pipelines rebuild on first launch. That's true of *any* Proton update by any tool, including clicking the button in ProtonUp-Qt. What the rolling-symlink design changes is *when*: the swap happens on a timer, so the stutter can land on a launch you weren't expecting it on. That's what `Previous` is for: switch back and you're on the old build immediately, no re-download. Prefer never being surprised? Disable the timer and run `proton-updater` by hand.
 
 ### Does it delete old versions?
 
-It keeps the two most recent builds per provider (`KEEP_BUILDS=2`) and prunes the rest after a successful install — that's what makes Latest/Previous work. Raise `KEEP_BUILDS` for deeper history. Pruning only runs when a new build installs, so lowering it won't take effect until the next update.
+It keeps the two most recent builds per provider (`KEEP_BUILDS=2`) and prunes the rest after a successful install. That's what makes Latest/Previous work. Raise `KEEP_BUILDS` for deeper history. Pruning only runs when a new build installs, so lowering it won't take effect until the next update.
 
 ### Do I need to restart Steam?
 
-If it was running during the update, yes — Steam reads `compatibilitytools.d` at startup. You won't lose a pin either way, since the tool ID didn't change.
+If it was running during the update, yes: Steam reads `compatibilitytools.d` at startup. You won't lose a pin either way, since the tool ID didn't change.
 
 ### Does this work with Lutris, Faugus or Heroic?
 
-Yes, with no configuration, because `~/.local/share/Steam/compatibilitytools.d` is the default shared runner directory for the umu ecosystem — one of the paths this script always populates. Builds show up under this script's names (`Proton-CachyOS-Latest-v3`, `Proton-GE-Latest`), and `Previous` rollback works the same everywhere.
+Yes, with no configuration, because `~/.local/share/Steam/compatibilitytools.d` is the default shared runner directory for the umu ecosystem, one of the paths this script always populates. Builds show up under this script's names (`Proton-CachyOS-Latest-v3`, `Proton-GE-Latest`), and `Previous` rollback works the same everywhere.
 
 This is also why it force-creates `~/.local/share/Steam` even if you only run Flatpak Steam: that path is where these launchers look regardless of how Steam is installed, and Faugus's own manager won't fetch the CachyOS `x86_64_v3` build at all. To only touch directories that already exist, delete the commented `mkdir -p` in `discover_compat_dirs`.
 
@@ -203,7 +203,7 @@ If you also use Faugus's Proton Manager, note that it installs GE-Proton as `Pro
 
 ### Does it work on ARM64?
 
-It'll fetch the right builds — CachyOS's arm64 asset and GE's aarch64 one — but actually running them needs FEX plus an x86 Steam (or umu), which is upstream's problem rather than this script's. Treat it as experimental.
+It'll fetch the right builds (CachyOS's arm64 asset and GE's aarch64 one), but actually running them needs FEX plus an x86 Steam (or umu), which is upstream's problem rather than this script's. Treat it as experimental.
 
 ### Why both CachyOS Proton and GE-Proton?
 
@@ -218,17 +218,17 @@ systemctl --user start proton-updater.service                  # force a run now
 systemctl --user list-timers proton-updater.timer              # is the timer on?
 ```
 
-- **"No Steam install found"** — discovery covers native, Flatpak (both layouts) and Snap. If yours is elsewhere, point it there: `STEAM_COMPAT_DIRS=/path/to/Steam/compatibilitytools.d proton-updater`.
-- **Extraction failed** — install `xz` (CachyOS builds) or `gzip` (GE builds). Preflight warns if either is missing.
-- **Timer never fires on a headless box** — user timers only run while your user manager is alive: `loginctl enable-linger "$USER"`.
+- **"No Steam install found"**: discovery covers native, Flatpak (both layouts) and Snap. If yours is elsewhere, point it there: `STEAM_COMPAT_DIRS=/path/to/Steam/compatibilitytools.d proton-updater`.
+- **Extraction failed**: install `xz` (CachyOS builds) or `gzip` (GE builds). Preflight warns if either is missing.
+- **Timer never fires on a headless box**: user timers only run while your user manager is alive. Run `loginctl enable-linger "$USER"`.
 
 ## Contributing
 
-Bug reports and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
